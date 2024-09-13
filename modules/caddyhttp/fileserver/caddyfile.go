@@ -59,6 +59,9 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 //	    precompressed <formats...>
 //	    status        <status>
 //	    disable_canonical_uris
+//	    pass_thru
+//	    etag_file_extensions <suffixes...>
+//	    etag_xattrs   [<xattr_name>]
 //	}
 //
 // The FinalizeUnmarshalCaddyfile method should be called after this
@@ -180,6 +183,15 @@ func (fsrv *FileServer) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				return d.ArgErr()
 			}
 			fsrv.EtagFileExtensions = etagFileExtensions
+
+		case "etag_xattr":
+			args := d.RemainingArgs()
+			switch len(args) {
+			case 0:
+				fsrv.EtagXattrs = []string{"user.xdg.origin.etag"}
+			case 1:
+				fsrv.EtagXattrs = args
+			}
 
 		default:
 			return d.Errf("unknown subdirective '%s'", d.Val())

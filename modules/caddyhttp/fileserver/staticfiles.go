@@ -18,11 +18,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/pkg/xattr"
 	"io"
 	"io/fs"
 	weakrand "math/rand"
 	"mime"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path"
 	"path/filepath"
@@ -169,8 +171,12 @@ type FileServer struct {
 	// our own Etag.
 	EtagFileExtensions []string `json:"etag_file_extensions,omitempty"`
 
-	fsmap caddy.FileSystems
+	// Name of file extended attribute to look for ETag values
+	// If not empty, file ETags will be read from the named file extended attribute (xattr) if available.
+	// xattr ETags are preferred over sidecar file ETags if both exist for the same file.
+	EtagXattrs []string `json:"etag_file_xattrs,omitempty"`
 
+	fsmap  caddy.FileSystems
 	logger *zap.Logger
 }
 
@@ -455,7 +461,11 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		respHeader.Set("Content-Encoding", ae)
 		respHeader.Del("Accept-Ranges")
 
-		// try to get the etag from pre computed files if an etag suffix list was provided
+		// try to look up the etag from file extended attributes if possible
+		if etag == "" && fsrv.EtagXattrs != nil {
+			etag = fsrv.getEtagFromFileXattrs(file)
+		}
+		// try to get the etag from pre-computed files if an etag suffix list was provided
 		if etag == "" && fsrv.EtagFileExtensions != nil {
 			etag, err = fsrv.getEtagFromFile(fileSystem, compressedFilename)
 			if err != nil {
@@ -489,7 +499,11 @@ func (fsrv *FileServer) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 			return err // error is already structured
 		}
 		defer file.Close()
-		// try to get the etag from pre computed files if an etag suffix list was provided
+		// try to look up the etag from file extended attributes if possible
+		if etag == "" && fsrv.EtagXattrs != nil {
+			etag = fsrv.getEtagFromFileXattrs(file)
+		}
+		// try to get the etag from pre-computed files if an etag suffix list was provided
 		if etag == "" && fsrv.EtagFileExtensions != nil {
 			etag, err = fsrv.getEtagFromFile(fileSystem, filename)
 			if err != nil {
@@ -731,6 +745,24 @@ func calculateEtag(d os.FileInfo) string {
 	sb.WriteString(strconv.FormatInt(d.Size(), 36))
 	sb.WriteRune('"')
 	return sb.String()
+}
+
+// Read the ETag value from file extended attributes
+func (fsrv *FileServer) getEtagFromFileXattrs(file fs.File) string {
+	if osFile, ok := file.(*os.File); ok {
+		for _, name := range fsrv.EtagXattrs {
+			etag, err := xattr.FGet(osFile, name)
+			if err != nil {
+				// Ignore missing or otherwise unavailable xattrs
+				continue
+			}
+			etag = textproto.TrimBytes(etag)
+			if len(etag) > 0 {
+				return string(etag)
+			}
+		}
+	}
+	return ""
 }
 
 // Finds the first corresponding etag file for a given file in the file system and return its content
